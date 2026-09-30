@@ -2,7 +2,7 @@
 services:
   reframe:
     build: .
-    image: reframe:latest
+    image: reframe:pgolovko
     container_name: reframe
     ports:
       - "8080:8080"

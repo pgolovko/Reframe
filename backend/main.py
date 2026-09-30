@@ -350,6 +350,7 @@ async def process_video_ffmpeg(
     quality: str, 
     muteAudio: str,
     useGpu: str = "false",
+    outputFormat: str = "mp4",
     trimStart: float = None,
     trimEnd: float = None,
     logo_paths: List[str] = None,
@@ -387,6 +388,10 @@ async def process_video_ffmpeg(
         
     job_status[job_id] = "processing"
     job_progress[job_id] = 0
+    
+    is_gif = outputFormat == "gif"
+    if is_gif:
+        useGpu = "false"
     
     # Quality settings
     if useGpu == "true":
@@ -466,21 +471,34 @@ async def process_video_ffmpeg(
         current_bg = f"[bg_with_text_{i}]"
         input_idx += 1
         
+    # Palette-based gif encoding for smaller, higher quality gifs
+    gif_filters = "mpdecimate,fps=10,scale=480:-1:flags=lanczos,split[gif_s0][gif_s1];[gif_s0]palettegen=max_colors=128:stats_mode=diff[gif_p];[gif_s1][gif_p]paletteuse=dither=floyd_steinberg:diff_mode=rectangle[gifout]"
+
     if current_bg != "[bg]":
         if subtitle_ass_path and os.path.exists(subtitle_ass_path):
             filters.append(f"{current_bg}ass='{subtitle_ass_path}':fontsdir='{FONTS_DIR}'[hw_with_subs]")
             current_bg = "[hw_with_subs]"
 
-        if useGpu == "true":
+        if is_gif:
+            filters.append(f"{current_bg}{gif_filters}")
+        elif useGpu == "true":
             filters.append(f"{current_bg}format=nv12,hwupload[hw]")
             current_bg = "[hw]"
             
         filter_str = "; ".join(filters)
-        cmd.extend(["-filter_complex", filter_str, "-map", current_bg])
-        if muteAudio != "true":
-            cmd.extend(["-map", "0:a?"])
+        if is_gif:
+            cmd.extend(["-filter_complex", filter_str, "-map", "[gifout]"])
+        else:
+            cmd.extend(["-filter_complex", filter_str, "-map", current_bg])
+            if muteAudio != "true":
+                cmd.extend(["-map", "0:a?"])
     else:
-        if subtitle_ass_path and os.path.exists(subtitle_ass_path):
+        if is_gif:
+            base_vf = f"[0:v]crop={w}:{h}:{x}:{y}"
+            if subtitle_ass_path and os.path.exists(subtitle_ass_path):
+                base_vf += f",ass='{subtitle_ass_path}':fontsdir='{FONTS_DIR}'"
+            cmd.extend(["-filter_complex", f"{base_vf},{gif_filters}", "-map", "[gifout]"])
+        elif subtitle_ass_path and os.path.exists(subtitle_ass_path):
             if useGpu == "true":
                 cmd.extend(["-vf", f"crop={w}:{h}:{x}:{y},ass='{subtitle_ass_path}':fontsdir='{FONTS_DIR}',format=nv12,hwupload"])
             else:
@@ -491,15 +509,18 @@ async def process_video_ffmpeg(
             else:
                 cmd.extend(["-vf", f"crop={w}:{h}:{x}:{y}"])
         
-    if useGpu == "true":
+    if is_gif:
+        cmd.extend(["-loop", "0", "-an"])
+    elif useGpu == "true":
         cmd.extend(["-c:v", "h264_vaapi", "-qp", qp])
     else:
         cmd.extend(["-c:v", "libx264", "-crf", crf, "-preset", preset])
     
-    if muteAudio == "true":
-        cmd.append("-an")
-    else:
-        cmd.extend(["-c:a", "copy"])
+    if not is_gif:
+        if muteAudio == "true":
+            cmd.append("-an")
+        else:
+            cmd.extend(["-c:a", "copy"])
         
     cmd.append(output_path)
     
@@ -564,7 +585,7 @@ async def process_video_ffmpeg(
 
 async def process_video_pipeline(
     job_id: str, input_path: str, output_path: str, 
-    x: int, y: int, w: int, h: int, quality: str, muteAudio: str, useGpu: str,
+    x: int, y: int, w: int, h: int, quality: str, muteAudio: str, useGpu: str, outputFormat: str,
     trimStart: float, trimEnd: float, logo_paths: list, logoXs: list, logoYs: list, 
     logoWs: list, logoHs: list, logoRotations: list, logoOpacities: list,
     text_paths: list, textXs: list, textYs: list, textWs: list, textHs: list, textRotations: list,
@@ -614,7 +635,7 @@ async def process_video_pipeline(
                 )
                 
         await process_video_ffmpeg(
-            job_id, input_path, output_path, x, y, w, h, quality, muteAudio, useGpu,
+            job_id, input_path, output_path, x, y, w, h, quality, muteAudio, useGpu, outputFormat,
             trimStart, trimEnd, logo_paths, logoXs, logoYs, logoWs, logoHs, logoRotations, logoOpacities,
             text_paths, textXs, textYs, textWs, textHs, textRotations, subtitle_ass_path
         )
@@ -638,6 +659,7 @@ async def process_video(
     quality: str = Form("high"),
     muteAudio: str = Form("false"),
     useGpu: str = Form("false"),
+    outputFormat: str = Form("mp4"),
     trimStart: float = Form(None),
     trimEnd: float = Form(None),
     logoFiles: List[UploadFile] = File([]),
@@ -699,20 +721,24 @@ async def process_video(
                 f.write(text_content)
             text_paths.append(text_path)
         
+    out_ext = ".gif" if outputFormat == "gif" else ".mp4"
     if customFilename:
         safe_name = "".join(c for c in customFilename if c.isalnum() or c in " .-_()")
-        if not safe_name.lower().endswith(".mp4"):
-            safe_name += ".mp4"
+        for known_ext in (".mp4", ".gif"):
+            if safe_name.lower().endswith(known_ext):
+                safe_name = safe_name[:-len(known_ext)]
+                break
+        safe_name += out_ext
             
         output_filename = f"{job_id}_{safe_name}"
     else:
-        output_filename = f"{job_id}_out.mp4"
+        output_filename = f"{job_id}_out{out_ext}"
         
     output_path = os.path.join(EXPORT_DIR, output_filename)
     
     asyncio.create_task(process_video_pipeline(
         job_id, input_path, output_path, 
-        x, y, width, height, quality, muteAudio, useGpu,
+        x, y, width, height, quality, muteAudio, useGpu, outputFormat,
         trimStart, trimEnd, logo_paths, logoXs, logoYs, logoWs, logoHs, logoRotations, logoOpacities,
         text_paths, textXs, textYs, textWs, textHs, textRotations,
         subtitleEnabled, subtitleModel, subtitleFont, subtitleFontSize, subtitleColor, subtitleHighlight,
@@ -803,15 +829,20 @@ async def automate_process(
             textYs.append(int(t.get("relativeY", 0) * ch))
             textRotations.append(t.get("rotation", 0))
             
+    outputFormat = settings.get("outputFormat", "mp4")
+    out_ext = ".gif" if outputFormat == "gif" else ".mp4"
     customFilename = settings.get("customFilename")
     if customFilename:
         safe_name = "".join(c for c in customFilename if c.isalnum() or c in " .-_()")
-        if not safe_name.lower().endswith(".mp4"):
-            safe_name += ".mp4"
+        for known_ext in (".mp4", ".gif"):
+            if safe_name.lower().endswith(known_ext):
+                safe_name = safe_name[:-len(known_ext)]
+                break
+        safe_name += out_ext
             
         output_filename = f"{job_id}_{safe_name}"
     else:
-        output_filename = f"{job_id}_out.mp4"
+        output_filename = f"{job_id}_out{out_ext}"
         
     output_path = os.path.join(EXPORT_DIR, output_filename)
     quality = settings.get("quality", "high")
@@ -822,13 +853,15 @@ async def automate_process(
     
     await process_video_ffmpeg(
         job_id, input_path, output_path,
-        x, y, cw, ch, quality, muteAudio, useGpu,
+        x, y, cw, ch, quality, muteAudio, useGpu, outputFormat,
         trimStart, trimEnd, logo_paths, logoXs, logoYs, logoWs, logoHs, logoRotations, logoOpacities,
         text_paths, textXs, textYs, textWs, textHs, textRotations
     )
     
     if os.path.exists(output_path):
-        return FileResponse(output_path, media_type="video/mp4", filename=f"automated_{video.filename}")
+        media_type = "image/gif" if out_ext == ".gif" else "video/mp4"
+        video_base = os.path.splitext(video.filename or "video")[0]
+        return FileResponse(output_path, media_type=media_type, filename=f"automated_{video_base}{out_ext}")
     return JSONResponse(status_code=500, content={"detail": "Video processing failed"})
 
 @app.websocket("/ws/progress/{job_id}")
@@ -859,12 +892,13 @@ async def download_video(job_id: str, filename: str = None):
     output_filename = None
     
     for f in os.listdir(EXPORT_DIR):
-        if f.startswith(f"{job_id}_") and f.lower().endswith('.mp4'):
+        if f.startswith(f"{job_id}_") and f.lower().endswith(('.mp4', '.gif')):
             output_filename = f
             break
                     
     if output_filename and os.path.exists(os.path.join(EXPORT_DIR, output_filename)):
-        return FileResponse(os.path.join(EXPORT_DIR, output_filename), media_type="video/mp4", filename=filename or output_filename)
+        media_type = "image/gif" if output_filename.lower().endswith(".gif") else "video/mp4"
+        return FileResponse(os.path.join(EXPORT_DIR, output_filename), media_type=media_type, filename=filename or output_filename)
     return JSONResponse(status_code=404, content={"detail": "File not found"})
 
 @app.get("/api/media")
@@ -887,7 +921,7 @@ async def list_media():
             if os.path.isfile(path):
                 metadata = {}
                 transcript = ""
-                if f.lower().endswith(('.mp4', '.mov', '.webm', '.avi')):
+                if f.lower().endswith(('.mp4', '.mov', '.webm', '.avi', '.gif')):
                     metadata = get_video_metadata(path)
                     job_id = None
                     if "_" in f:

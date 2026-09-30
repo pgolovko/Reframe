@@ -83,6 +83,7 @@ const showLogs = ref(false)
 const quality = ref('high')
 const muteAudio = ref(false)
 const useGpu = ref(false)
+const outputFormat = ref('mp4')
 
 // Overlay State
 const showAdvancedOptions = ref(false)
@@ -543,7 +544,8 @@ const exportVideo = async (): Promise<void> => {
   const ratio = selectedPreset.value.id === 'custom' 
     ? `${customRatioW.value}x${customRatioH.value}`
     : t('cropper.presets.' + selectedPreset.value.id).split(' ')[0].replace(':', 'x');
-  const customFileName = `reframe_${origName}_${ratio}.mp4`;
+  const fileExt = outputFormat.value === 'gif' ? 'gif' : 'mp4'
+  const customFileName = `reframe_${origName}_${ratio}.${fileExt}`;
   
   const formData = new FormData()
   formData.append('file', props.videoFile)
@@ -557,6 +559,7 @@ const exportVideo = async (): Promise<void> => {
   formData.append('quality', quality.value)
   formData.append('muteAudio', muteAudio.value.toString())
   formData.append('useGpu', useGpu.value.toString())
+  formData.append('outputFormat', outputFormat.value)
   
   formData.append('subtitleEnabled', subtitleEnabled.value ? "true" : "false")
   formData.append('subtitleModel', localStorage.getItem('reframe_subtitle_model') || 'base')
@@ -660,7 +663,8 @@ const exportVideo = async (): Promise<void> => {
           const ratio = selectedPreset.value.id === 'custom' 
             ? `${customRatioW.value}x${customRatioH.value}`
             : t('cropper.presets.' + selectedPreset.value.id).split(' ')[0].replace(':', 'x');
-          downloadFilename.value = `reframe_${origName}_${ratio}.mp4`;
+          const fileExt = outputFormat.value === 'gif' ? 'gif' : 'mp4'
+          downloadFilename.value = `reframe_${origName}_${ratio}.${fileExt}`;
           
           downloadUrl.value = `/api/download/${jobId}?filename=${encodeURIComponent(downloadFilename.value)}`
           isExporting.value = false
@@ -690,6 +694,7 @@ const getSettings = () => ({
   quality: quality.value,
   muteAudio: muteAudio.value,
   useGpu: useGpu.value,
+  outputFormat: outputFormat.value,
   trimStart: trimStart.value,
   trimEnd: trimEnd.value,
   
@@ -739,6 +744,7 @@ const applySettings = (settings: any, options?: any) => {
     if (settings.quality !== undefined) quality.value = settings.quality
     if (settings.muteAudio !== undefined) muteAudio.value = settings.muteAudio
     if (settings.useGpu !== undefined) useGpu.value = settings.useGpu
+    if (settings.outputFormat !== undefined) outputFormat.value = settings.outputFormat
   }
   
   if (opt.trim) {
@@ -1181,6 +1187,14 @@ defineExpose({
 
       <div class="options-section">
         <label class="option-label">
+          <span>{{ $t('cropper.output_format') }}</span>
+          <select v-model="outputFormat" class="input-select" :disabled="isExporting">
+            <option value="mp4">{{ $t('cropper.output_format_mp4') }}</option>
+            <option value="gif">{{ $t('cropper.output_format_gif') }}</option>
+          </select>
+        </label>
+
+        <label class="option-label">
           <span>{{ $t('cropper.quality') }}</span>
           <select v-model="quality" class="input-select" :disabled="isExporting">
             <option value="high">{{ $t('cropper.quality_high') }}</option>
@@ -1189,12 +1203,12 @@ defineExpose({
         </label>
         
         <label class="option-label checkbox-label">
-          <input type="checkbox" v-model="muteAudio" :disabled="isExporting" />
+          <input type="checkbox" v-model="muteAudio" :disabled="isExporting || outputFormat === 'gif'" />
           <span>{{ $t('cropper.mute_audio') }}</span>
         </label>
         
         <label class="option-label checkbox-label">
-          <input type="checkbox" v-model="useGpu" :disabled="isExporting" />
+          <input type="checkbox" v-model="useGpu" :disabled="isExporting || outputFormat === 'gif'" />
           <span>{{ $t('cropper.hardware_acceleration') }}</span>
         </label>
       </div>
